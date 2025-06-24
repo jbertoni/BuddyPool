@@ -82,5 +82,16 @@ fn main() {
         allocs += 1;
     }
 
+    println!("Did {} alloc calls.", allocs);
     assert!(allocs == config.size / config.min_buddy);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_main() {
+        main();
+    }
 }

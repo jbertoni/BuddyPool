@@ -42,19 +42,23 @@
 //!
 //!        let bytes: usize = 2 * 1024 * 1024;
 //!
-//!        let malloc_base =
+//!        let alloc_mem =
 //!            unsafe {
 //!                alloc(Layout::array::<u8>(bytes).unwrap())
 //!            } as usize;
 //!
+//!        // Get the configuration parameters ready.
+//!
 //!        let config =
 //!            BuddyConfig {
-//!                base:       malloc_base,        // the base address from libc::malloc
+//!                base:       alloc_mem  ,        // the base address from libc::malloc
 //!                size:       bytes,              // the size of the memory region in bytes
 //!                min_alloc:  1,                  // the minimum allocation size allowed
 //!                max_alloc:  17 * 1024,          // the largest allocation that will be allowed
 //!                min_buddy:  8192,               // the minimum size buddy block that will be created
 //!            };
+//!
+//!        // Construct the pool and try an alloc/free pair.
 //!
 //!        let mut pool    = BuddyPool::new(config).unwrap();
 //!        let     address = pool.alloc(config.max_alloc).unwrap();
@@ -2973,6 +2977,8 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().error_type() == BuddyErrorType::OversizeAlloc);
+
+        assert!(verify_pool(&pool));
 
         // Now allocate until the pool is empty.
 
