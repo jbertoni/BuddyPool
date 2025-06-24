@@ -7,5 +7,5 @@ include = ["Cargo.toml", "src/*.rs", "README"]
 
 license = "MIT OR BSD-2-Clause OR BSD-1-Clause"
 description = "simple buddy allocator"
-repository = "https://github.com/jbertoni/Buddy"
+repository = "https://github.com/jbertoni/BuddyPool"
 keywords   = [ "buddy", "allocator" ]
