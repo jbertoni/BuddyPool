@@ -1,0 +1,10 @@
+[package]
+name = "buddy_pool"
+version = "0.0.1"
+authors = ["bertoni"]
+edition = "2024"
+include = ["Cargo.toml", "src/*.rs", "README"]
+
+license = "MIT OR BSD-2-Clause OR BSD-1-Clause"
+description = "simple buddy allocator"
+repository = "https://github.com/jbertoni/Buddy"
