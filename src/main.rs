@@ -38,7 +38,17 @@ fn main() {
 
     assert!(address >= config.base && address < config.base + config.size);
 
+    // Dump some memory status lines.
+
+    println!("Pool:  {}", pool);
+    println!("Memory dump:  {}", pool.dump_address(address));
+    println!("Memory dump:  {}", pool.dump_address(address + 1));
+    println!("Memory dump:  {}", pool.dump_address(config.base - 1));
+    println!("Memory dump:  {}", pool.dump_address(config.base + config.size));
+
     pool.free(address).unwrap();
+
+    println!("Memory dump:  {}", pool.dump_address(address));
 
     println!("Allocated and freed at {:#x}", address);
 

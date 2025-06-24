@@ -65,7 +65,11 @@
 //!
 //!        assert!(address >= config.base && address < config.base + config.size);
 //!
+//!        println!("Memory dump:  {}", pool.dump_address(address));
+//!
 //!        pool.free(address).unwrap();
+//!
+//!        println!("Memory dump:  {}", pool.dump_address(address));
 //!
 //!        // Try a double free.
 //!
@@ -157,13 +161,13 @@ pub struct BuddyPool {
 
 impl Display for BuddyPool {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "BuddyPool: at {:#x}", self.base)
+        write!(f, "{}", self.print())
     }
 }
 
 impl fmt::Debug for BuddyPool {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "BuddyPool: at {:#x}", self.base)
+        write!(f, "{}", self.print())
     }
 }
 
@@ -761,9 +765,12 @@ impl BuddyPool {
         self.splits += 1;
     }
 
+    /// Produces a string describing the status of an address.
+
     pub fn dump_address(&self, address: usize) -> String {
         if address < self.base || address >= self.end {
-            return format!("{:#x} => invalid address", address);
+            return format!("{:#x} => invalid address:  bounds [{:#x}, {:#x}]",
+                address, self.base, self.end);
         }
 
         let offset  = address - self.base;
@@ -1248,12 +1255,20 @@ impl BuddyPool {
 
         Ok(self.base + leaf_index * self.min_size)
     }
+
+    /// Produces a string to describe the pool for debugging output.
+
+    pub fn print(&self) -> String {
+        format!("BuddyPool:  [{:#x}, {:#x}]", self.base, self.end)
+    }
 }
 
 /// Converts a byte count into a buddy size, if possibe, obeying the
 /// limits on buddy sizes given as parameters.
 
-pub fn compute_buddy_size(size: usize, min_buddy: usize, max_buddy: usize) -> Result<usize, BuddyError> {
+pub fn compute_buddy_size(size: usize, min_buddy: usize, max_buddy: usize)
+        -> Result<usize, BuddyError> {
+
     if !min_buddy.is_power_of_two() {
         let message = format!( "That min_buddy ({}) is not a power of 2", min_buddy);
         return Err(BuddyError::new(BuddyErrorType::InvalidParameter, message));
@@ -2235,6 +2250,16 @@ mod tests {
 
         println!("test_print_pool:  pool:  {}", pool);
         println!("test_print_pool:  pool:  {:?}", pool);
+
+        let output = format!("{}", pool.print());
+
+        // Check the output.
+
+        compare_message
+        (
+            &output,
+            &format!("BuddyPool:  [{:#x}, {:#x}]", pool.base, pool.end)
+        );
     }
 
     #[test]
@@ -2304,7 +2329,8 @@ mod tests {
         compare_message
         (
             &message,
-            &format!("{:#x} => state Allocated, size 8192, aligned = true", address)
+            &format!("{:#x} => state Allocated, size {}, aligned = true",
+                address, size)
         );
 
         let message = pool.dump_address(address + 1);
@@ -2312,7 +2338,17 @@ mod tests {
         compare_message
         (
             &message,
-            &format!("{:#x} => state Allocated, size 8192, aligned = false", address + 1)
+            &format!("{:#x} => state Allocated, size {}, aligned = false",
+                address + 1, size)
+        );
+
+        let message = pool.dump_address(address + pool.min_size);
+
+        compare_message
+        (
+            &message,
+            &format!("{:#x} => state Merged, size {}, aligned = true",
+                address + pool.min_size, pool.min_size)
         );
 
         let message = pool.dump_address(address - 1);
@@ -2320,7 +2356,8 @@ mod tests {
         compare_message
         (
             &message,
-            &format!("{:#x} => state Merged, size 1024, aligned = false", address - 1)
+            &format!("{:#x} => state Merged, size {}, aligned = false",
+                address - 1, pool.min_size)
         );
 
         let message = pool.dump_address(pool.end);
@@ -2328,7 +2365,8 @@ mod tests {
         compare_message
         (
             &message,
-            &format!("{:#x} => invalid address", pool.end)
+            &format!("{:#x} => invalid address:  bounds [{:#x}, {:#x}]",
+                pool.end, pool.base, pool.end)
         );
     }
 
