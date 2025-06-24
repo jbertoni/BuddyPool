@@ -10,8 +10,8 @@
 //! its own data structures for metadata.  It thus can be used, for example to
 //! allocate I/O memory that is not directly accessible to the CPU.  As part of
 //! this approach, BuddyPool does not contain any unsafe code, using Vec structures
-//! with integers for linking lists.  This approach does consume more memory,
-//! though.
+//! with integers for linking lists.  This approach does consume more memory than
+//! some other approaches.
 //!
 //! ## Types
 //!
@@ -35,6 +35,8 @@
 //!        use buddy_pool::BuddyPool;
 //!        use buddy_pool::BuddyConfig;
 //!        use buddy_pool::BuddyErrorType;
+//!        use std::alloc::alloc;
+//!        use std::alloc::Layout;
 //!
 //!        // Allocate some memory for testing.
 //!
@@ -42,12 +44,12 @@
 //!
 //!        let malloc_base =
 //!            unsafe {
-//!                std::alloc::alloc(std::alloc::Layout::array::<u8>(bytes).unwrap())
+//!                alloc(Layout::array::<u8>(bytes).unwrap())
 //!            } as usize;
 //!
 //!        let config =
 //!            BuddyConfig {
-//!                base:       malloc_base,         // the base address from libc::malloc
+//!                base:       malloc_base,        // the base address from libc::malloc
 //!                size:       bytes,              // the size of the memory region in bytes
 //!                min_alloc:  1,                  // the minimum allocation size allowed
 //!                max_alloc:  17 * 1024,          // the largest allocation that will be allowed
@@ -332,9 +334,9 @@ impl ListHead {
 enum LeafState {
     Free,
     Allocated,
+    Merged,
     Wanted,
     WantedHead,
-    Merged,
     Locked,
     LockedHead,
 }
@@ -809,11 +811,7 @@ impl BuddyPool {
         let list_id = self.leaves[leaf_id].current_index;
         let state   = self.leaves[leaf_id].state;
 
-        if
-            state != LeafState::Allocated
-        &&  state != LeafState::Wanted
-        &&  state != LeafState::WantedHead
-        {
+        if !self.is_allocated(state) {
             self.freeing_free += 1;
 
             let message =
@@ -849,6 +847,18 @@ impl BuddyPool {
         Ok(())
     }
 
+    fn is_mergeable(&self, state: LeafState) -> bool {
+            state == LeafState::Free
+        ||  state == LeafState::Locked
+        ||  state == LeafState::LockedHead
+    }
+
+    fn is_allocated(&self, state: LeafState) -> bool {
+            state == LeafState::Allocated
+        ||  state == LeafState::Wanted
+        ||  state == LeafState::WantedHead
+    }
+
     fn try_merge_buddies(&mut self, floating_id: usize) -> Option<usize> {
         assert!(floating_id < self.leaves.len());
         assert!(self.leaves[floating_id].is_off_lists());
@@ -864,7 +874,7 @@ impl BuddyPool {
 
         // If the buddy isn't free, we can't merge it.
 
-        if state != LeafState::Free && state != LeafState::Wanted {
+        if !self.is_mergeable(state) {
             return None;
         }
 
@@ -1854,10 +1864,13 @@ mod tests {
 
     #[test]
     fn test_display() {
-        assert!(format!("{}", LeafState::Free)      == "Free"     );
-        assert!(format!("{}", LeafState::Allocated) == "Allocated");
-        assert!(format!("{}", LeafState::Wanted)    == "Wanted"   );
-        assert!(format!("{}", LeafState::Merged)    == "Merged"   );
+        assert!(format!("{}", LeafState::Free      ) == "Free"      );
+        assert!(format!("{}", LeafState::Allocated ) == "Allocated" );
+        assert!(format!("{}", LeafState::Merged    ) == "Merged"    );
+        assert!(format!("{}", LeafState::Wanted    ) == "Wanted"    );
+        assert!(format!("{}", LeafState::WantedHead) == "WantedHead");
+        assert!(format!("{}", LeafState::Locked    ) == "Locked"    );
+        assert!(format!("{}", LeafState::LockedHead) == "LockedHead");
 
         assert!(format!("{}", BuddyErrorType::InvalidParameter) == "InvalidParameter");
     }
@@ -2828,6 +2841,7 @@ mod tests {
         let leaf        = &pool.leaves[leaf_id];
 
         assert!(leaf.state == LeafState::Allocated);
+        assert!(pool.is_allocated(leaf.state));
 
         let buddy_id = pool.buddy_id(leaf_id, BuddyAction::Merge).unwrap();
         assert!(buddy_id == leaf_id + factor);
@@ -2978,5 +2992,57 @@ mod tests {
         }
 
         assert!(allocs == config.size / config.min_buddy);
+    }
+
+    fn test_state(pool: &BuddyPool, state: LeafState) {
+        match state {
+            LeafState::Free => {
+                assert!( pool.is_mergeable(state));
+                assert!(!pool.is_allocated(state));
+            }
+
+            LeafState::Allocated => {
+                assert!(!pool.is_mergeable(state));
+                assert!( pool.is_allocated(state));
+            }
+
+            LeafState::Merged => {
+                assert!(!pool.is_mergeable(state));
+                assert!(!pool.is_allocated(state));
+            }
+
+            LeafState::Wanted => {
+                assert!(!pool.is_mergeable(state));
+                assert!( pool.is_allocated(state));
+            }
+
+            LeafState::WantedHead => {
+                assert!(!pool.is_mergeable(state));
+                assert!( pool.is_allocated(state));
+            }
+
+            LeafState::Locked => {
+                assert!( pool.is_mergeable(state));
+                assert!(!pool.is_allocated(state));
+            }
+
+            LeafState::LockedHead => {
+                assert!( pool.is_mergeable(state));
+                assert!(!pool.is_allocated(state));
+            }
+        }
+    }
+
+    #[test]
+    fn test_predicates() {
+        let pool = get_simple_pool();
+
+        test_state(&pool, LeafState::Free      );
+        test_state(&pool, LeafState::Allocated );
+        test_state(&pool, LeafState::Merged    );
+        test_state(&pool, LeafState::Wanted    );
+        test_state(&pool, LeafState::WantedHead);
+        test_state(&pool, LeafState::Locked    );
+        test_state(&pool, LeafState::LockedHead);
     }
 }
