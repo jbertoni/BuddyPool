@@ -220,7 +220,7 @@ impl BuddyError {
     }
 }
 
-/// Defines the error codes for all operations.
+/// Defines all the error codes for the functions.
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BuddyErrorType {
@@ -230,8 +230,6 @@ pub enum BuddyErrorType {
     OversizeAlloc,
     OutOfMemory,
     InvalidAddress,
-    AllocAddressMisalignment,
-    AllocSizeMismatch,
     FreeingFreeMemory,
     InvalidListId,
     InvalidLeafId,
@@ -1619,7 +1617,7 @@ mod tests {
         check_error!(result, InvalidSize);
     }
 
-    fn get_simple_pool() -> BuddyPool {
+    fn get_pool() -> BuddyPool {
         let  base       = 0x10000000;
         let  min_alloc  = 0;
         let  min_buddy  = 1024;
@@ -1641,7 +1639,7 @@ mod tests {
         BuddyPool::new(config).unwrap()
     }
 
-    fn get_non_empty_freelist(pool: &BuddyPool) -> Option<usize> {
+    fn find_non_empty(pool: &BuddyPool) -> Option<usize> {
         for i in 0..pool.free_lists.len() {
             if pool.free_lists[i].size > 0 {
                 return Some(i);
@@ -1652,8 +1650,8 @@ mod tests {
     }
 
     #[test]
-    fn test_get_non_empty_freelist() {
-        let mut pool = get_simple_pool();
+    fn test_find_non_empty() {
+        let mut pool = get_pool();
 
         for i in 0..pool.free_lists.len() {
             loop {
@@ -1665,12 +1663,12 @@ mod tests {
             }
         }
 
-        assert!(get_non_empty_freelist(&pool).is_none());
+        assert!(find_non_empty(&pool).is_none());
     }
 
     #[test]
     fn test_freelist() {
-        let mut pool  = get_simple_pool();
+        let mut pool  = get_pool();
         let     size  = pool.end - pool.base;
 
         assert!(pool.min_size == 1024);
@@ -1777,7 +1775,7 @@ mod tests {
 
     #[test]
     fn test_compute_list_id() {
-        let     pool          = get_simple_pool();
+        let     pool          = get_pool();
         let mut current_size  = pool.min_size;
         let mut current_index = 0;
 
@@ -1799,34 +1797,23 @@ mod tests {
 
     #[test]
     fn test_get_stats() {
-        let mut pool  = get_simple_pool();
-        let mut index = pool.free_lists.len();
+        let mut pool  = get_pool();
 
         // Find the free list that contains all the free blocks.
 
-        for i in 0..pool.free_lists.len() {
-            if pool.free_lists[i].size != 0 {
-                let list   = &mut pool.free_lists[i];
-                let expect = list.first;
-                let result = BuddyPool::dequeue(list, &mut pool.leaves).unwrap();
+        let index  = find_non_empty(&pool).unwrap();
+        let list   = &mut pool.free_lists[index];
+        let expect = list.first;
+        let result = BuddyPool::dequeue(list, &mut pool.leaves).unwrap();
 
-                // Get the limits for some entries in the leaf structure.
+        // Get the limits for some entries in the leaf structure.
 
-                let leaf_limit     = pool.leaves.len();
-                let freelist_limit = pool.free_lists.len() as u32;
+        let leaf_limit     = pool.leaves.len();
+        let freelist_limit = pool.free_lists.len() as u32;
 
-                assert!(result == expect);
-                assert!(pool.leaves[result].is_off_lists());
-                assert!(pool.leaves[result].is_list_consistent(freelist_limit, leaf_limit));
-
-                index = i;
-                break;
-            }
-        }
-
-        // Make sure we found a list with members.
-
-        assert!(index < pool.free_lists.len());
+        assert!(result == expect);
+        assert!(pool.leaves[result].is_off_lists());
+        assert!(pool.leaves[result].is_list_consistent(freelist_limit, leaf_limit));
 
         // Now check the enqueue and dequeue counts.
 
@@ -2092,11 +2079,11 @@ mod tests {
 
     #[test]
     fn test_alloc_all() {
-        let mut pool   = get_simple_pool();
+        let mut pool   = get_pool();
 
         // Find a free list with some entries.
 
-        let index = get_non_empty_freelist(&pool).unwrap();
+        let index = find_non_empty(&pool).unwrap();
 
         // The other lists should be empty.
 
@@ -2144,17 +2131,11 @@ mod tests {
 
     #[test]
     fn test_simple_alloc() {
-        let mut pool       = get_simple_pool();
-        let mut index      = pool.free_lists.len();
+        let mut pool       = get_pool();
         let     pool_size  = pool.end - pool.base;
         let     blocks     = pool_size / pool.max_alloc;
 
-        for i in 0..pool.free_lists.len() {
-            if pool.free_lists[i].size != 0 {
-                index = i;
-                break;
-            }
-        }
+        let index = find_non_empty(&pool).unwrap();
 
         assert!(index < pool.free_lists.len());
         assert!(pool.free_lists[index].size == blocks);
@@ -2248,7 +2229,7 @@ mod tests {
 
     #[test]
     fn test_print_pool() {
-        let pool = get_simple_pool();
+        let pool = get_pool();
 
         // Just make sure that they don't cause a fault.
 
@@ -2314,7 +2295,7 @@ mod tests {
 
     #[test]
     fn test_dump_address() {
-        let mut pool    = get_simple_pool();
+        let mut pool    = get_pool();
         let     size    = pool.max_size;
         let     address = pool.alloc(size).unwrap();
 
@@ -2353,7 +2334,7 @@ mod tests {
 
     #[test]
     fn test_split_buddy() {
-        let mut pool   = get_simple_pool();
+        let mut pool   = get_pool();
         let mut index  = pool.free_lists.len();
         let mut larger = 0;
 
@@ -2394,7 +2375,7 @@ mod tests {
 
         // Get another pool for trying an allocate.
 
-        let mut pool       = get_simple_pool();
+        let mut pool       = get_pool();
         let     first      = pool.free_lists[index].first;
         let     address    = pool.to_address(first).unwrap();
         let     buddy_size = pool.leaves[first].current_size(pool.log2_min_size);
@@ -2407,8 +2388,8 @@ mod tests {
 
     #[test]
     fn test_buddy_id() {
-        let mut pool     = get_simple_pool();
-        let     list_id  = get_non_empty_freelist(&pool).unwrap();
+        let mut pool     = get_pool();
+        let     list_id  = find_non_empty(&pool).unwrap();
 
         assert!(pool.free_lists[list_id].size > 1);
 
@@ -2432,8 +2413,8 @@ mod tests {
 
     #[test]
     fn test_merge_buddies() {
-        let mut pool     = get_simple_pool();
-        let     list_id  = get_non_empty_freelist(&pool).unwrap();
+        let mut pool     = get_pool();
+        let     list_id  = find_non_empty(&pool).unwrap();
         let     shift    = list_id + pool.log2_min_size - 1;
         let     skip     = 2_usize.pow(shift as u32) / pool.min_size;
 
@@ -2558,7 +2539,7 @@ mod tests {
 
     #[test]
     fn test_reverse() {
-        let mut pool       = get_simple_pool();
+        let mut pool       = get_pool();
         let mut list_sizes = Vec::new();
         let mut addresses  = Vec::new();
 
@@ -2609,9 +2590,9 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_check_pool_sizes() {
-        let mut pool  = get_simple_pool();
+        let mut pool  = get_pool();
         let mut sizes = Vec::new();
-        let     index = get_non_empty_freelist(&pool).unwrap();
+        let     index = find_non_empty(&pool).unwrap();
 
         for list in &pool.free_lists {
             sizes.push(list.size);
@@ -2710,8 +2691,8 @@ mod tests {
 
     #[test]
     fn test_verify_list() {
-        let mut pool  = get_simple_pool();
-        let     index = get_non_empty_freelist(&pool).unwrap();
+        let mut pool  = get_pool();
+        let     index = find_non_empty(&pool).unwrap();
         let     list  = &pool.free_lists[index];
         let     first = list.first;
         let     tail  = pool.leaves[first].prev as usize;
@@ -2821,8 +2802,8 @@ mod tests {
 
     #[test]
     fn test_try_merge_allocated() {
-        let mut pool       = get_simple_pool();
-        let     index      = get_non_empty_freelist(&pool).unwrap();
+        let mut pool       = get_pool();
+        let     index      = find_non_empty(&pool).unwrap();
         let     min_size   = pool.min_size;
         let mut addresses  = Vec::new();
         let     factor     = 4;
@@ -2885,7 +2866,7 @@ mod tests {
         let mut pool       = BuddyPool::new(config).unwrap();
         let     sizes      = get_freelist_sizes(&pool);
 
-        let     index      = get_non_empty_freelist(&pool).unwrap();
+        let     index      = find_non_empty(&pool).unwrap();
         let     leaf       = pool.dequeue_free(index).unwrap().unwrap();
         let     buddy      = pool.buddy_id(leaf, BuddyAction::Split).unwrap();
 
@@ -3041,7 +3022,7 @@ mod tests {
 
     #[test]
     fn test_predicates() {
-        let pool = get_simple_pool();
+        let pool = get_pool();
 
         test_state(&pool, LeafState::Free      );
         test_state(&pool, LeafState::Allocated );
