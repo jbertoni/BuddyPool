@@ -5,13 +5,13 @@
 //  and MIT licenses.
 //
 
-//! BuddyPool implements a simple buddy-system allocator.  It does not assume
-//! that the memory (or resource) being allocated is accessible, and uses only
-//! its own data structures for metadata.  It thus can be used, for example to
-//! allocate I/O memory that is not directly accessible to the CPU.  As part of
-//! this approach, BuddyPool does not contain any unsafe code, using Vec structures
-//! with integers for linking lists.  This approach does consume more memory than
-//! some other approaches.
+//! BuddyPool implements a simple buddy-system allocator.  It does not assume that
+//! the memory (or resource) being allocated is accessible, and uses only its own
+//! data structures for metadata.  It thus can be used, for example, to allocate I/O
+//! memory that is not directly addressable by the CPU.  As part of this approach,
+//! BuddyPool does not contain any unsafe code, using Vec structures with integers
+//! to implement linked lists.  This approach does consume more memory than some
+//! other approaches.
 //!
 //! ## Types
 //!
@@ -51,7 +51,7 @@
 //!
 //!        let config =
 //!            BuddyConfig {
-//!                base:       alloc_mem  ,        // the base address from libc::malloc
+//!                base:       alloc_mem,          // the base address from libc::malloc
 //!                size:       bytes,              // the size of the memory region in bytes
 //!                min_alloc:  1,                  // the minimum allocation size allowed
 //!                max_alloc:  17 * 1024,          // the largest allocation that will be allowed
@@ -64,7 +64,6 @@
 //!        let     address = pool.alloc(config.max_alloc).unwrap();
 //!
 //!        assert!(address >= config.base && address < config.base + config.size);
-//!
 //!        println!("Memory dump:  {}", pool.dump_address(address));
 //!
 //!        pool.free(address).unwrap();
@@ -77,6 +76,7 @@
 //!
 //!        assert!(result.is_err());
 //!        assert!(result.unwrap_err().error_type() == BuddyErrorType::FreeingFreeMemory);
+//!        println!("Memory dump:  {}", pool.dump_address(address));
 //!
 //!        // Try an undersized allocation.
 //!
@@ -146,14 +146,9 @@ pub struct BuddyPool {
     max_size:       usize,  // maximum buddy size to allocate
     min_alloc:      usize,  // minimum size for an alloc() call
     max_alloc:      usize,  // maximum size for an alloc() call
-    allocs:         usize,
-    frees:          usize,
-    out_of_mem:     usize,  // out-of-memory failures
-    freeing_free:   usize,  // free() called with invalid address
-    splits:         usize,  // buddy block splits
-    merges:         usize,  // buddy block merges
     log2_min_size:  usize,
 
+    stats:          BuddyStats,
     leaves:         Vec<Leaf>,
     free_lists:     Vec<ListHead>,
     // locked_lists:  Vec<ListHead>,
@@ -173,15 +168,19 @@ impl fmt::Debug for BuddyPool {
 
 /// Contains the results of a query for statistics on the pool.
 
+#[derive(Clone)]
 pub struct BuddyStats {
-    pub min_size:     usize,
-    pub max_size:     usize,
-    pub allocs:       usize,
-    pub frees:        usize,
-    pub out_of_mem:   usize,
-    pub freeing_free: usize,
-    pub splits:       usize,
-    pub merges:       usize,
+    pub min_size:           u64,
+    pub max_size:           u64,
+    pub allocs:             u64,
+    pub frees:              u64,
+    pub out_of_memory:      u64,
+    pub freeing_free:       u64,
+    pub splits:             u64,
+    pub merges:             u64,
+    pub invalid_addresses:  u64,
+    pub oversize_allocs:    u64,
+    pub undersize_allocs:   u64,
 
     pub freelist_stats: Vec<ListStats>,
 }
@@ -189,6 +188,7 @@ pub struct BuddyStats {
 /// Contains the statistics returned by a single list.
 /// Currently, the only lists are the free lists.
 
+#[derive(Clone)]
 pub struct ListStats {
     pub dequeues:    usize,
     pub enqueues:    usize,
@@ -530,18 +530,30 @@ impl BuddyPool {
 
         Self::setup_leaves(&mut leaves, &mut free_lists, min_size, max_size)?;
 
+        // Get a statistics struct ready.
+
+        let stats =
+            BuddyStats {
+                min_size:           min_size as u64,
+                max_size:           max_size as u64,
+                allocs:             0,
+                frees:              0,
+                out_of_memory:      0,
+                freeing_free:       0,
+                splits:             0,
+                merges:             0,
+                invalid_addresses:  0,
+                oversize_allocs:    0,
+                undersize_allocs:   0,
+                freelist_stats:     Vec::new(), // not used
+            };
+
         // Now we are ready to build the pool struct.
 
         let base           = config.base;
         let end            = base + pool_size;
         let min_alloc      = config.min_alloc;
         let max_alloc      = config.max_alloc;
-        let allocs         = 0;
-        let frees          = 0;
-        let out_of_mem     = 0;
-        let freeing_free   = 0;
-        let splits         = 0;
-        let merges         = 0;
         let log2_min_size  = min_size.ilog2() as usize;
 
         Ok(BuddyPool {
@@ -551,13 +563,8 @@ impl BuddyPool {
             max_alloc,
             min_size,
             max_size,
-            allocs,
-            frees,
-            out_of_mem,
-            freeing_free,
-            splits,
-            merges,
             log2_min_size,
+            stats,
             leaves,
             free_lists,
             // locked_lists,
@@ -645,6 +652,8 @@ impl BuddyPool {
                     self.max_alloc
                 );
 
+            self.stats.oversize_allocs += 1;
+
             return Err(BuddyError::new(BuddyErrorType::OversizeAlloc, message));
         }
 
@@ -657,10 +666,12 @@ impl BuddyPool {
                     self.min_alloc
                 );
 
+            self.stats.undersize_allocs += 1;
+
             return Err(BuddyError::new(BuddyErrorType::UndersizeAlloc, message));
         }
 
-        self.allocs += 1;
+        self.stats.allocs += 1;
 
         // Get the buddy index for this size and check whether
         // anything that size is free.
@@ -700,10 +711,11 @@ impl BuddyPool {
         // If there's no block large enough available, return an error.
 
         if split_list == self.free_lists.len() {
-            self.out_of_mem += 1;
+            self.stats.out_of_memory += 1;
 
             let message =
                 format!("The pool has no memory available for that request size ({})", bytes);
+
             return Err(BuddyError::new(BuddyErrorType::OutOfMemory, message));
         }
 
@@ -762,7 +774,7 @@ impl BuddyPool {
         // Now set the current size of the first half of the block.
 
         self.leaves[leaf_index].current_index = next_list;
-        self.splits += 1;
+        self.stats.splits += 1;
     }
 
     /// Produces a string describing the status of an address.
@@ -796,6 +808,8 @@ impl BuddyPool {
                     self.end
                 );
 
+            self.stats.invalid_addresses += 1;
+
             return Err(BuddyError::new(BuddyErrorType::InvalidAddress, message));
         }
 
@@ -813,6 +827,8 @@ impl BuddyPool {
                     self.base + closest
                 );
 
+            self.stats.invalid_addresses += 1;
+
             return Err(BuddyError::new(BuddyErrorType::InvalidAddress, message));
         }
 
@@ -821,7 +837,7 @@ impl BuddyPool {
         let state   = self.leaves[leaf_id].state;
 
         if !self.is_allocated(state) {
-            self.freeing_free += 1;
+            self.stats.freeing_free += 1;
 
             let message =
                 format!
@@ -834,7 +850,7 @@ impl BuddyPool {
             return Err(BuddyError::new(BuddyErrorType::FreeingFreeMemory, message));
         }
 
-        self.frees += 1;
+        self.stats.frees += 1;
 
         let mut current_leaf = leaf_id;
         let mut current_list = list_id;
@@ -917,7 +933,7 @@ impl BuddyPool {
         self.leaves[merged_id  ].state         = LeafState::Free;
         self.leaves[merged_id  ].current_index = list_id + 1;
 
-        self.merges += 1;
+        self.stats.merges += 1;
 
         Some(merged_id)
     }
@@ -978,14 +994,7 @@ impl BuddyPool {
     /// Returns the statistics for the pool.
 
     pub fn get_stats(&self) -> BuddyStats {
-        let min_size     = self.min_size;
-        let max_size     = self.max_size;
-        let allocs       = self.allocs;
-        let frees        = self.frees;
-        let out_of_mem   = self.out_of_mem;
-        let freeing_free = self.out_of_mem;
-        let splits       = self.splits;
-        let merges       = self.merges;
+        // Gather the freelist statistics.
 
         let mut freelist_stats = Vec::with_capacity(self.free_lists.len());
 
@@ -1001,9 +1010,12 @@ impl BuddyPool {
             freelist_stats.push(stats);
         }
 
-        BuddyStats {
-            min_size, max_size, allocs, frees, out_of_mem, freeing_free, splits, merges, freelist_stats
-        }
+        // Now clone the pool statistics and add the free list information.
+
+        let mut stats = self.stats.clone();
+
+        stats.freelist_stats = freelist_stats;
+        stats
     }
 
     // This helper function converts a byte count into a valid index into
@@ -2140,8 +2152,10 @@ mod tests {
 
         let stats = pool.get_stats();
 
-        assert!(stats.out_of_mem == 1     );
-        assert!(stats.allocs     == allocs);
+        assert!(stats.out_of_memory == 1                  );
+        assert!(stats.allocs        == allocs             );
+        assert!(stats.min_size      == pool.stats.min_size);
+        assert!(stats.max_size      == pool.stats.max_size);
     }
 
     #[test]
@@ -2173,11 +2187,12 @@ mod tests {
 
         pool.min_alloc = 1;
 
-        let result = pool.alloc(0);
+        let result  = pool.alloc(0);
         check_error!(result, UndersizeAlloc);
 
         // Try passing an address before the pool base to free.
 
+        let current = pool.stats.invalid_addresses;
         let result  = pool.free(pool.base - 1);
 
         let message =
@@ -2186,10 +2201,12 @@ mod tests {
                 "That address ({:#x}) is out of range ([{:#x}, {:#x}])", pool.base - 1, pool.base, pool.end
             );
 
+        assert!(pool.stats.invalid_addresses == current + 1);
         check_error_message!(result, InvalidAddress, &message);
 
         // Try passing an address after the pool end to free.
 
+        let current = pool.stats.invalid_addresses;
         let result  = pool.free(pool.end + 1);
         let message =
             format!
@@ -2197,10 +2214,12 @@ mod tests {
                 "That address ({:#x}) is out of range ([{:#x}, {:#x}])", pool.end + 1, pool.base, pool.end
             );
 
+        assert!(pool.stats.invalid_addresses == current + 1);
         check_error_message!(result, InvalidAddress, &message);
 
         // Try passing a misaligned address.
 
+        let current = pool.stats.invalid_addresses;
         let result  = pool.free(address + 1);
         let message =
             format!
@@ -2208,6 +2227,7 @@ mod tests {
                 "That address ({:#x}) is incorrect (closest buddy {:#x})", address + 1, address
             );
 
+        assert!(pool.stats.invalid_addresses == current + 1);
         check_error_message!(result, InvalidAddress, &message);
 
         // Now check invalid states.
@@ -2313,9 +2333,14 @@ mod tests {
     }
 
     #[test]
+    fn test_compare_message_pass() {
+        compare_message("test message", "test message");
+    }
+
+    #[test]
     #[should_panic]
-    fn test_compare_message() {
-        compare_message("a", "b");
+    fn test_compare_message_fail() {
+        compare_message("result a", "result b");
     }
 
     #[test]
@@ -2913,14 +2938,19 @@ mod tests {
 
         // Split leaf once.
 
+        let current = pool.stats.splits;
+
         pool.split_buddy(leaf);
+        assert!(pool.stats.splits == current + 1);
 
         let result = pool.buddy_id(leaf, BuddyAction::Split);
         assert!(result.is_none());
 
         // Merge them back together.
 
-        let result = pool.try_merge_buddies(leaf).unwrap();
+        let current = pool.stats.merges;
+        let result  = pool.try_merge_buddies(leaf).unwrap();
+        assert!(pool.stats.merges == current + 1);
         assert!(result == leaf);
         assert!(sizes[index] == pool.free_lists[index].size + 1);
 
@@ -2974,25 +3004,32 @@ mod tests {
         let mut pool    = BuddyPool::new(config).unwrap();
         let     address = pool.alloc(config.max_alloc).unwrap();
 
+        assert!(pool.stats.allocs == 1);
         pool.free(address).unwrap();
 
         // Try a double free.
 
-        let result = pool.free(address);
+        let current = pool.stats.freeing_free;
+        let result  = pool.free(address);
+        assert!(pool.stats.freeing_free == current + 1);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().error_type() == BuddyErrorType::FreeingFreeMemory);
 
         // Try an undersized allocation.
 
-        let result = pool.alloc(config.min_alloc - 1);
+        let current = pool.stats.undersize_allocs;
+        let result  = pool.alloc(config.min_alloc - 1);
+        assert!(pool.stats.undersize_allocs == current + 1);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().error_type() == BuddyErrorType::UndersizeAlloc);
 
         // Try an oversized allocation.
 
-        let result = pool.alloc(config.max_alloc + 1);
+        let current = pool.stats.oversize_allocs;
+        let result  = pool.alloc(config.max_alloc + 1);
+        assert!(pool.stats.oversize_allocs == current + 1);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().error_type() == BuddyErrorType::OversizeAlloc);
@@ -3002,6 +3039,7 @@ mod tests {
         // Now allocate until the pool is empty.
 
         let mut allocs = 0;
+        let     current = pool.stats.out_of_memory;
 
         loop {
            let result = pool.alloc(config.min_alloc);
@@ -3010,6 +3048,7 @@ mod tests {
               let error = result.unwrap_err();
 
               assert!(error.error_type() == BuddyErrorType::OutOfMemory);
+              assert!(pool.stats.out_of_memory == current + 1);
               break;
            }
 

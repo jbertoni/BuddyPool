@@ -5,6 +5,8 @@
 //  and MIT licenses.
 //
 
+/// This file contains sample code for the buddy_pool crate.
+
 use buddy_pool::BuddyPool;
 use buddy_pool::BuddyConfig;
 use buddy_pool::BuddyErrorType;
@@ -43,6 +45,7 @@ fn main() {
     println!("Pool:  {}", pool);
     println!("Memory dump:  {}", pool.dump_address(address));
     println!("Memory dump:  {}", pool.dump_address(address + 1));
+    println!("Memory dump:  {}", pool.dump_address(address + config.min_buddy));
     println!("Memory dump:  {}", pool.dump_address(config.base - 1));
     println!("Memory dump:  {}", pool.dump_address(config.base + config.size));
 
