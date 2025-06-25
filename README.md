@@ -9,3 +9,5 @@ not mapped into the processor address space, or to manage unmapped main memory.
 
 As part of this approach, BuddyPool does not contain any unsafe code. It uses
 Vec structures with integers to implement linked lists.
+
+See the main.rs file for a sample program.  It can be run with "cargo run".

@@ -13,6 +13,8 @@
 //! to implement linked lists.  This approach does consume more memory than some
 //! other approaches.
 //!
+//! See the main.rs file for a sample program.  It can be run with "cargo run".
+//!
 //! ## Types
 //!
 //! * BuddyPool
@@ -190,10 +192,10 @@ pub struct BuddyStats {
 
 #[derive(Clone)]
 pub struct ListStats {
-    pub dequeues:    usize,
-    pub enqueues:    usize,
-    pub removes:     usize,
-    pub size:        usize,
+    pub dequeues:    u64,
+    pub enqueues:    u64,
+    pub removes:     u64,
+    pub size:        u64,
 }
 
 /// Contains the error information for failed requests.
@@ -322,9 +324,9 @@ struct ListHead {
 
     // Usage statistics
 
-    dequeues:    usize,
-    enqueues:    usize,
-    removes:     usize,
+    dequeues:    u64,
+    enqueues:    u64,
+    removes:     u64,
 }
 
 impl ListHead {
@@ -1003,7 +1005,7 @@ impl BuddyPool {
         for freelist in &self.free_lists {
             let stats =
                 ListStats {
-                    size:      freelist.size,
+                    size:      freelist.size as u64,
                     enqueues:  freelist.enqueues,
                     dequeues:  freelist.dequeues,
                     removes:   freelist.removes,
@@ -1944,8 +1946,8 @@ mod tests {
         // as well.  The enqueues occurred when we set up the leaves
         // array and the free lists.
 
-        assert!(stats.freelist_stats[index].dequeues == 1       );
-        assert!(stats.freelist_stats[index].enqueues == enqueues);
+        assert!(stats.freelist_stats[index].dequeues == 1              );
+        assert!(stats.freelist_stats[index].enqueues == enqueues as u64);
 
         for i in 0..pool.free_lists.len() {
             if i != index {
