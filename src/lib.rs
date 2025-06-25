@@ -234,6 +234,9 @@ pub enum BuddyErrorType {
     OversizeAlloc,
     OutOfMemory,
     InvalidAddress,
+    UnalignedAddress,
+    AddressOutsidePool,
+    AddressTooHigh,
     FreeingFreeMemory,
     InvalidListId,
     InvalidLeafId,
@@ -363,6 +366,20 @@ impl BuddyPool {
     /// Creates a new pool.
 
     pub fn new(config: BuddyConfig) -> Result<BuddyPool, BuddyError> {
+        // Check for an end that would overflow usize
+
+        if config.base > usize::MAX - config.size {
+            let message =
+                format!
+                (
+                    "That region extends beyond usize ({:x}, {:x}",
+                    config.base,
+                    config.size
+                );
+
+            return Err(BuddyError::new(BuddyErrorType::AddressTooHigh, message));
+        }
+
         // Check that we can round max_size up.
 
         if config.max_alloc == 0 || config.max_alloc > usize::MAX / 2 {
@@ -414,21 +431,6 @@ impl BuddyPool {
                 (
                     "The pool size ({}) is out of the range [1, usize::MAX / 2]",
                     pool_size
-                );
-
-            let error = BuddyError::new(BuddyErrorType::InvalidParameter, message);
-            return Err(error);
-        }
-
-        let max_base = (usize::MAX / 2) - pool_size - min_size;
-
-        if config.base > max_base {
-            let message =
-                format!
-                (
-                    "The base ({}) is out of the range [0, {}]",
-                    config.base,
-                    max_base
                 );
 
             let error = BuddyError::new(BuddyErrorType::InvalidParameter, message);
@@ -1273,6 +1275,91 @@ impl BuddyPool {
     pub fn print(&self) -> String {
         format!("BuddyPool:  [{:#x}, {:#x}]", self.base, self.end)
     }
+
+    /// Removes an area from the pool.  This function cannot undo
+    /// current allocations, but once freed, killed memory will
+    /// not be reallocated.  The base address and size must be
+    /// multiples of min_size, the smallest buddy allowed for this
+    /// pool.
+
+    pub fn kill(&mut self, kill_base: usize, kill_size: usize) -> Result<(), BuddyError> {
+        self.validate_region(kill_base, kill_size)?;
+
+        Ok(())
+    }
+
+    /// Adds an area back to the pool.  The target area must have been
+    /// killed, and the base and size must be a multiple of min_size,
+    /// the smallest buddy allowed for this pool.
+
+    pub fn unkill(&mut self, kill_base: usize, kill_size: usize) -> Result<(), BuddyError> {
+        self.validate_region(kill_base, kill_size)?;
+
+        Ok(())
+    }
+
+    fn validate_region(&self, base: usize, size: usize) -> Result<(), BuddyError> {
+        // Be careful about computing base + size.
+
+        if base > usize::MAX - size {
+            let message =
+                format!("That region extends beyond usize ({:x}, {:x}", base, size);
+
+            return Err(BuddyError::new(BuddyErrorType::AddressTooHigh, message));
+        }
+
+        let end    = base + size;
+
+        if base < self.base {
+            let message =
+                format!
+                (
+                    "That address (limit {:#x}) is too low (limit {:#x})",
+                    base,
+                    self.base
+                );
+
+            return Err(BuddyError::new(BuddyErrorType::AddressOutsidePool, message));
+        } 
+
+        let offset = base - self.base;
+
+        if end > self.end {
+            let message =
+                format!
+                (
+                    "That region ([{:#x}, {:#x}]) extends too far ({:#x})",
+                    base,
+                    end,
+                    self.end
+                );
+
+            Err(BuddyError::new(BuddyErrorType::InvalidAddress, message))
+        } else if offset % self.min_size != 0 {
+            let message =
+                format!
+                (
+                    "That address ({:#x}) is not aligned ({}, {:#x})",
+                    base,
+                    self.min_size,
+                    self.min_size
+                );
+
+            Err(BuddyError::new(BuddyErrorType::UnalignedAddress, message))
+        } else if size % self.min_size != 0 {
+            let message =
+                format!
+                (
+                    "That size ({}) should be a multiple of {}",
+                    size,
+                    self.min_size
+                );
+
+            Err(BuddyError::new(BuddyErrorType::InvalidSize, message))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Converts a byte count into a buddy size, if possibe, obeying the
@@ -1942,6 +2029,7 @@ mod tests {
         test_pool_size(config, 0);
 
         config           = base_config.clone();
+        config.base      = 0;  // pass the overflow check
         config.min_buddy = 512;
         config.max_alloc = 1011;
         config.size      = BuddyPool::truncate(usize::MAX / 2 + 4 * base_config.min_buddy, base_config.min_buddy);
@@ -2044,18 +2132,20 @@ mod tests {
         // Now check an unfriendly base parameter.
 
         config      = base_config.clone();
-        config.base = usize::MAX;
-
-        let max_base = (usize::MAX / 2) - config.size - config.min_buddy;
+        config.base = BuddyPool::truncate(usize::MAX, 4 * config.min_buddy);
+        config.size = 4 * config.min_buddy;
 
         let message = format!
         (
-            "The base ({}) is out of the range [0, {}]",
-            config.base,
-            max_base
+            "That region extends beyond usize ({:x}, {:x}",
+                config.base,
+                config.size
+
         );
 
-        test_bad_config(config, &message);
+        let result = BuddyPool::new(config);
+
+        check_error_message!(result, AddressTooHigh, &message);
     }
 
     #[test]
@@ -3095,6 +3185,142 @@ mod tests {
                 assert!(!pool.is_allocated(state));
             }
         }
+    }
+
+    fn check_valid_region(pool: &BuddyPool, base: usize, size: usize) {
+        let result = pool.validate_region(base, size);
+        let pass   = result.is_ok();
+
+        if !pass {
+            let error   = result.unwrap_err();
+            let message = error.message();
+
+            println!("check_valid_region:  failed with inputs [{:#x}, {:#x}]",
+                base, size);
+            println!("   error message \"{}\"", message);
+            println!("   pool limits [{:#x}, {:#x}]",
+                pool.base, pool.end);
+            panic!("check_valid_region:  got an invalid region");
+        }
+    }
+
+    fn check_invalid_region(pool: &BuddyPool, base: usize, size: usize, error: BuddyErrorType) {
+        let result       = pool.validate_region(base, size);
+        let region_valid = result.is_ok();
+
+        if region_valid {
+            println!("check_invalid_region:  failed to detect an error [{:#x}, {:#x}]",
+                base, size);
+            println!("check_invalid_region:  pool limits [{:#x}, {:#x}]",
+                pool.base, pool.end);
+            panic!("check_invalid_region:  The error was not detected");
+        }
+
+        let error_returned = result.unwrap_err().error_type();
+
+        if error_returned != error {
+            println!("check_invalid_region:  got error type {}, expected {}",
+                error_returned, error);
+            panic!("check_invalid_region:  The error type did not match");
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_type() {
+        let pool  = get_pool();
+        let base  = pool.base + pool.min_size;
+        let size  = pool.end - pool.base;
+
+        check_invalid_region(&pool, base, size, BuddyErrorType::FreeingFreeMemory);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_range_ok() {
+        let pool  = get_pool();
+        let base  = pool.base;
+        let size  = pool.min_size;
+
+        check_invalid_region(&pool, base, size, BuddyErrorType::InvalidParameter);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_range_failed() {
+        let pool  = get_pool();
+        let base  = pool.base;
+        let size  = pool.end - base;
+
+        check_valid_region(&pool, base + pool.min_size, size);
+    }
+
+    #[test]
+    fn test_validate_region() {
+        let pool      = get_pool();
+        let base      = pool.base;
+        let end       = pool.end;
+        let min_size  = pool.min_size;
+        let pool_size = end - base;
+
+        check_valid_region  (&pool, base,            pool_size           );
+        check_valid_region  (&pool, base + min_size, pool_size - min_size);
+        check_invalid_region(&pool, base,            pool_size + min_size, BuddyErrorType::InvalidAddress);
+        check_invalid_region(&pool, base + min_size, pool_size,            BuddyErrorType::InvalidAddress);
+
+        // Test the case that base + size overflows usize.
+
+        let high_base = (usize::MAX - min_size) + 1;
+        check_invalid_region(&pool, high_base, min_size, BuddyErrorType::AddressTooHigh);
+
+        let mut current = min_size;
+
+        for _i in 0..3 {
+            check_invalid_region(&pool, base - min_size,   current           , BuddyErrorType::AddressOutsidePool);
+            check_invalid_region(&pool, base - 1,          current           , BuddyErrorType::AddressOutsidePool);
+            check_invalid_region(&pool, base + 1,          current           , BuddyErrorType::UnalignedAddress);
+            check_invalid_region(&pool, end - current - 1, current           , BuddyErrorType::UnalignedAddress);
+            check_invalid_region(&pool, end - current,     current + min_size, BuddyErrorType::InvalidAddress);
+            check_invalid_region(&pool, base,              current + 1       , BuddyErrorType::InvalidSize);
+            check_invalid_region(&pool, base,              current - 1       , BuddyErrorType::InvalidSize);
+
+            check_valid_region(&pool, base + 2 * current,  current);
+            check_valid_region(&pool, base + 2 * min_size, current);
+            check_valid_region(&pool, base +     min_size, current);
+            check_valid_region(&pool, end  -     current,  current);
+
+            current *= 2;
+        }
+    }
+
+    #[test]
+    fn test_kill() {
+        let mut pool      = get_pool();
+        let     base      = pool.base;
+        let     end       = pool.end;
+        let     min_size  = pool.min_size;
+        let     pool_size = end - base;
+
+        let result = pool.kill(base, min_size);
+        assert!(result.is_ok());
+
+        let result = pool.kill(base, pool_size);
+        assert!(result.is_ok());
+
+        let result = pool.kill(base + min_size, min_size);
+        assert!(result.is_ok());
+
+        let result = pool.kill(base + min_size, pool_size);
+        assert!(result.is_err());
+
+        let result = pool.unkill(base, min_size);
+        assert!(result.is_ok());
+
+        let result = pool.unkill(base, pool_size);
+        assert!(result.is_ok());
+
+        let result = pool.unkill(base + min_size, pool_size);
+        assert!(result.is_err());
     }
 
     #[test]
